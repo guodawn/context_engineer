@@ -16,8 +16,8 @@ def main():
     # Initialize components
     tokenizer = TokenizerService(backend="simple")
     budget_manager = BudgetManager(tokenizer)
-    assembler = ContextAssembler(tokenizer)
     compressor = Compressor(tokenizer)
+    assembler = ContextAssembler(tokenizer, compressor)
     policy_engine = PolicyEngine()
     
     # Load default configuration
@@ -84,7 +84,8 @@ def main():
     result = assembler.assemble_context(
         content_sections=content_sections,
         budget_allocations=allocations,
-        placement_policy=config.get_default_policy().placement
+        placement_policy=config.get_default_policy().placement,
+        bucket_configs=config.buckets
     )
     
     print(f"Assembled context: {result.total_tokens} tokens")
@@ -159,7 +160,8 @@ def main():
     policy_result = assembler.assemble_context(
         content_sections=content_sections,
         budget_allocations=policy_allocations,
-        placement_policy=policy_decision.placement_strategy
+        placement_policy=policy_decision.placement_strategy,
+        bucket_configs=config.buckets
     )
     
     print(f"Policy-optimized context: {policy_result.total_tokens} tokens")

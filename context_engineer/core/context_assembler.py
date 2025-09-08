@@ -30,14 +30,16 @@ class AssembledContext:
 class ContextAssembler:
     """Assembles context according to position strategies to avoid "Lost in the Middle"."""
     
-    def __init__(self, tokenizer_service: Optional[TokenizerService] = None):
+    def __init__(self, tokenizer_service: Optional[TokenizerService] = None, compressor_service: Optional['Compressor'] = None):
         """
         Initialize context assembler.
         
         Args:
             tokenizer_service: TokenizerService instance for token counting
+            compressor_service: Compressor service for content compression
         """
         self.tokenizer = tokenizer_service or TokenizerService()
+        self.compressor = compressor_service
         self.placement_strategy = {
             "head": [],
             "middle": [],
@@ -47,7 +49,8 @@ class ContextAssembler:
     def assemble_context(self,
                         content_sections: Dict[str, str],
                         budget_allocations: List[BudgetAllocation],
-                        placement_policy: Optional[Dict[str, List[str]]] = None) -> AssembledContext:
+                        placement_policy: Optional[Dict[str, List[str]]] = None,
+                        bucket_configs: Optional[Dict[str, Any]] = None) -> AssembledContext:
         """
         Assemble context sections according to placement strategy.
         
@@ -55,6 +58,7 @@ class ContextAssembler:
             content_sections: Dictionary of section names to content
             budget_allocations: Budget allocations for each section
             placement_policy: Placement policy (head/middle/tail positions)
+            bucket_configs: Optional bucket configurations to access compression methods
             
         Returns:
             AssembledContext with position-aware arrangement
@@ -70,7 +74,7 @@ class ContextAssembler:
         sections = self._sort_sections(sections)
         
         # Apply token limits and compression
-        sections = self._apply_token_limits(sections)
+        sections = self._apply_token_limits(sections, bucket_configs)
         
         # Build final context with position strategy
         assembled_context, placement_map, dropped_sections = self._build_context(sections)
@@ -127,14 +131,20 @@ class ContextAssembler:
         
         return sorted(sections, key=lambda s: (placement_order.get(s.placement, 1), -s.priority))
     
-    def _apply_token_limits(self, sections: List[ContextSection]) -> List[ContextSection]:
+    def _apply_token_limits(self, sections: List[ContextSection], bucket_configs: Optional[Dict[str, Any]] = None) -> List[ContextSection]:
         """Apply token limits and compression to sections."""
         processed_sections = []
         
         for section in sections:
             if section.compression_needed and section.token_count > 0:
-                # Apply compression or truncation
-                compressed_content = self._compress_section(section)
+                # Determine compression method from bucket configuration
+                compression_method = None
+                if bucket_configs and section.name in bucket_configs:
+                    bucket_config = bucket_configs[section.name]
+                    compression_method = getattr(bucket_config, 'compress', None)
+                
+                # Apply compression with specified method
+                compressed_content = self._compress_section(section, compression_method)
                 section.content = compressed_content
                 section.token_count = self.tokenizer.count_tokens(compressed_content)
             
@@ -142,16 +152,30 @@ class ContextAssembler:
         
         return processed_sections
     
-    def _compress_section(self, section: ContextSection) -> str:
-        """Apply compression to a section based on its needs."""
-        # Simple truncation for now - can be enhanced with actual compression
-        if section.token_count > 0:
-            # Truncate to approximately 50% of original size
-            target_tokens = max(1, section.token_count // 2)
-            from ..utils.token_utils import truncate_to_tokens
-            return truncate_to_tokens(section.content, target_tokens, self.tokenizer)
+    def _compress_section(self, section: ContextSection, compression_method: Optional[str] = None) -> str:
+        """Apply compression to a section based on its needs and configuration."""
+        if section.token_count <= 0:
+            return section.content
+            
+        # Determine target tokens (approximately 50% of original size)
+        target_tokens = max(1, section.token_count // 2)
         
-        return section.content
+        # If compressor service is available, use it with specified method
+        if self.compressor and compression_method:
+            try:
+                result = self.compressor.compress(
+                    content=section.content,
+                    target_tokens=target_tokens,
+                    method=compression_method
+                )
+                return result.compressed_content
+            except Exception as e:
+                # Fallback to simple truncation if compression fails
+                print(f"Warning: Compression method '{compression_method}' failed: {e}")
+        
+        # Fallback to simple truncation
+        from ..utils.token_utils import truncate_to_tokens
+        return truncate_to_tokens(section.content, target_tokens, self.tokenizer)
     
     def _build_context(self, sections: List[ContextSection]) -> Tuple[str, Dict[str, List[str]], List[str]]:
         """Build final context string with position strategy."""
