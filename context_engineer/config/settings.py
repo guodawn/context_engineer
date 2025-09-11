@@ -33,6 +33,7 @@ class BucketConfig:
     rerank: Optional[str] = None
     droppable: bool = False
     placement: str = "middle"
+    content_score: float = 0.5
 
 
 @dataclass
@@ -117,7 +118,8 @@ class ContextConfig:
                     'select': bucket.select,
                     'rerank': bucket.rerank,
                     'droppable': bucket.droppable,
-                    'placement': bucket.placement
+                    'placement': bucket.placement,
+                    'content_score': bucket.content_score
                 }
                 for name, bucket in self.buckets.items()
             },

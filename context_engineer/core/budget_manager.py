@@ -13,7 +13,8 @@ class CompatBucketConfig:
     def __init__(self, name: str, min_tokens: int, max_tokens: int, weight: float,
                  sticky: bool = False, compress: Optional[str] = None, 
                  select: bool = False, rerank: Optional[str] = None,
-                 droppable: bool = False, placement: str = "middle"):
+                 droppable: bool = False, placement: str = "middle",
+                 content_score: float = 0.5):
         self.name = name
         self.min_tokens = min_tokens
         self.max_tokens = max_tokens
@@ -24,6 +25,7 @@ class CompatBucketConfig:
         self.rerank = rerank
         self.droppable = droppable
         self.placement = placement
+        self.content_score = content_score
 
 try:
     from ..config.settings import BucketConfig as ConfigBucketConfig
@@ -53,8 +55,8 @@ class BudgetAllocation:
     bucket_name: str
     allocated_tokens: int
     priority: float
-    compression_needed: bool = False
     content_score: float = 0.0
+    # 移除了compression_needed字段，压缩决策完全基于内容vs预算的实时比较
 
 
 class BudgetManager:
@@ -94,7 +96,8 @@ class BudgetManager:
                     'select': getattr(config, 'select', False),
                     'rerank': getattr(config, 'rerank', None),
                     'droppable': getattr(config, 'droppable', False),
-                    'placement': getattr(config, 'placement', 'middle')
+                    'placement': getattr(config, 'placement', 'middle'),
+                    'content_score': getattr(config, 'content_score', 0.5)
                 }
                 bucket = BucketConfig(name=name, **bucket_data)
                 self.add_bucket(bucket)
@@ -125,7 +128,7 @@ class BudgetManager:
     def allocate_budget(self, 
                        model_context_limit: int,
                        output_budget: int,
-                       content_scores: Dict[str, float],
+                       content_scores: Optional[Dict[str, float]] = None,
                        system_overhead: int = 200) -> List[BudgetAllocation]:
         """
         Allocate budget across buckets using the algorithm from context_engineer.md.
@@ -133,7 +136,7 @@ class BudgetManager:
         Args:
             model_context_limit: Model's context window limit
             output_budget: Tokens reserved for output
-            content_scores: Relevance scores for each bucket's content
+            content_scores: Relevance scores for each bucket's content (optional)
             system_overhead: System overhead tokens
             
         Returns:
@@ -147,13 +150,14 @@ class BudgetManager:
         
         # Step 2: Dynamic optimization based on content scores
         if remaining_budget > 0:
+            # 如果没有提供content_scores，使用BucketConfig中的默认值
+            if content_scores is None:
+                content_scores = {name: bucket.content_score for name, bucket in self.buckets.items()}
             allocations = self._optimize_allocation(allocations, content_scores, remaining_budget)
         
-        # Step 3: Handle overflow if still over budget
-        total_allocated = sum(alloc.allocated_tokens for alloc in allocations)
-        if total_allocated > available_budget:
-            allocations = self._handle_overflow(allocations, available_budget)
-        
+        # 移除无意义的溢出处理逻辑
+        # 前面的分配逻辑已经确保总分配不会超过可用预算
+        # 压缩决策应该基于实际内容 vs allocated_tokens，而不是预算层面的"溢出"
         return allocations
     
     def _initial_allocation(self, available_budget: int) -> List[BudgetAllocation]:
@@ -163,15 +167,27 @@ class BudgetManager:
         
         if available_budget < min_total:
             # Not enough budget for minimum requirements
-            # Allocate proportionally to minimums
-            for bucket in self.buckets.values():
-                allocated = int((bucket.min_tokens / min_total) * available_budget)
-                allocation = BudgetAllocation(
-                    bucket_name=bucket.name,
-                    allocated_tokens=allocated,
-                    priority=bucket.weight
-                )
-                allocations.append(allocation)
+            # 处理极端情况：预算为负值或零
+            if available_budget <= 0:
+                # 极端情况：每个桶至少分配1个token，按最小需求比例
+                for bucket in self.buckets.values():
+                    allocated = max(1, int((bucket.min_tokens / min_total) * 1))  # 按比例分配最少1个
+                    allocation = BudgetAllocation(
+                        bucket_name=bucket.name,
+                        allocated_tokens=allocated,
+                        priority=bucket.weight
+                    )
+                    allocations.append(allocation)
+            else:
+                # 正常比例缩减：按比例分配正数预算
+                for bucket in self.buckets.values():
+                    allocated = max(1, int((bucket.min_tokens / min_total) * available_budget))
+                    allocation = BudgetAllocation(
+                        bucket_name=bucket.name,
+                        allocated_tokens=allocated,
+                        priority=bucket.weight
+                    )
+                    allocations.append(allocation)
         else:
             # Normal allocation
             remaining_budget = available_budget - min_total
@@ -226,36 +242,9 @@ class BudgetManager:
         
         return allocations
     
-    def _handle_overflow(self, 
-                        allocations: List[BudgetAllocation],
-                        available_budget: int) -> List[BudgetAllocation]:
-        """Step 3: Handle budget overflow by dropping content according to drop order."""
-        # Sort allocations by drop priority (if specified)
-        if self.drop_order:
-            allocations.sort(key=lambda a: self.drop_order.index(a.bucket_name) 
-                           if a.bucket_name in self.drop_order else len(self.drop_order))
-        
-        # Reduce allocations starting from lowest priority
-        total_allocated = sum(alloc.allocated_tokens for alloc in allocations)
-        reduction_needed = total_allocated - available_budget
-        
-        for allocation in reversed(allocations):
-            if reduction_needed <= 0:
-                break
-            
-            bucket = self.buckets[allocation.bucket_name]
-            
-            # Only reduce droppable buckets or those above minimum
-            if bucket.droppable or allocation.allocated_tokens > bucket.min_tokens:
-                current = allocation.allocated_tokens
-                target = max(bucket.min_tokens, current - reduction_needed)
-                reduction = current - target
-                
-                allocation.allocated_tokens = target
-                allocation.compression_needed = True
-                reduction_needed -= reduction
-        
-        return allocations
+    # 移除了无意义的_handle_overflow方法
+    # 压缩逻辑现在完全基于实际内容 vs allocated_tokens 的比较
+    # 而不是基于预算层面的"溢出"检测
     
     def get_bucket_config(self, bucket_name: str) -> Optional[BucketConfig]:
         """Get configuration for a specific bucket."""

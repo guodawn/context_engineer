@@ -13,8 +13,9 @@ class ContextSection:
     content: str
     priority: float
     placement: str = "middle"
-    compression_needed: bool = False
     token_count: int = 0
+    allocated_tokens: int = 0  # 预算分配的token数量，用于精确压缩目标
+    # 移除compression_needed字段，通过比较token_count和allocated_tokens判断是否需要压缩
 
 
 @dataclass
@@ -106,8 +107,8 @@ class ContextAssembler:
                 name=section_name,
                 content=content,
                 priority=allocation.priority,
-                compression_needed=allocation.compression_needed,
-                token_count=self.tokenizer.count_tokens(content)
+                token_count=self.tokenizer.count_tokens(content),
+                allocated_tokens=allocation.allocated_tokens  # 传递预算分配的token数量
             )
             sections.append(section)
         
@@ -132,11 +133,17 @@ class ContextAssembler:
         return sorted(sections, key=lambda s: (placement_order.get(s.placement, 1), -s.priority))
     
     def _apply_token_limits(self, sections: List[ContextSection], bucket_configs: Optional[Dict[str, Any]] = None) -> List[ContextSection]:
-        """Apply token limits and compression to sections."""
+        """Apply token limits and compression to sections.
+        
+        通过比较token_count和allocated_tokens来判断是否需要压缩，
+        完全移除了compression_needed标记的依赖。
+        """
         processed_sections = []
         
         for section in sections:
-            if section.compression_needed and section.token_count > 0:
+            # 通过比较实际token数和分配预算来判断是否需要压缩
+            if section.token_count > section.allocated_tokens and section.token_count > 0:
+                # 内容超过预算，需要压缩
                 # Determine compression method from bucket configuration
                 compression_method = None
                 if bucket_configs and section.name in bucket_configs:
@@ -147,20 +154,28 @@ class ContextAssembler:
                 compressed_content = self._compress_section(section, compression_method)
                 section.content = compressed_content
                 section.token_count = self.tokenizer.count_tokens(compressed_content)
+            # 如果内容符合预算或为空，无需任何处理
             
             processed_sections.append(section)
         
         return processed_sections
     
     def _compress_section(self, section: ContextSection, compression_method: Optional[str] = None) -> str:
-        """Apply compression to a section based on its needs and configuration."""
+        """Apply compression to a section based on its needs and configuration.
+        
+        完全按照allocated_tokens进行精确压缩，移除50%启发式规则。
+        """
         if section.token_count <= 0:
             return section.content
-            
-        # Determine target tokens (approximately 50% of original size)
-        target_tokens = max(1, section.token_count // 2)
         
-        # If compressor service is available, use it with specified method
+        # 精确压缩：直接按照预算分配的allocated_tokens作为目标
+        target_tokens = section.allocated_tokens
+        
+        # 如果实际内容已经符合预算要求，无需压缩
+        if section.token_count <= target_tokens:
+            return section.content
+            
+        # 如果压缩机服务可用，使用指定方法进行精确压缩
         if self.compressor and compression_method:
             try:
                 result = self.compressor.compress(
@@ -170,10 +185,10 @@ class ContextAssembler:
                 )
                 return result.compressed_content
             except Exception as e:
-                # Fallback to simple truncation if compression fails
+                # 压缩方法失败，回退到简单截断
                 print(f"Warning: Compression method '{compression_method}' failed: {e}")
         
-        # Fallback to simple truncation
+        # 回退到简单截断，精确到allocated_tokens
         from ..utils.token_utils import truncate_to_tokens
         return truncate_to_tokens(section.content, target_tokens, self.tokenizer)
     
@@ -304,12 +319,16 @@ class ContextAssembler:
         }
         
         for section in assembled_context.sections:
+            # 通过比较token_count和allocated_tokens来判断是否需要压缩
+            needs_compression = section.token_count > section.allocated_tokens
             stats["section_details"].append({
                 "name": section.name,
                 "tokens": section.token_count,
                 "placement": section.placement,
                 "priority": section.priority,
-                "compression_needed": section.compression_needed
+                "allocated_tokens": section.allocated_tokens,
+                "needs_compression": needs_compression,
+                "budget_utilization": section.token_count / section.allocated_tokens if section.allocated_tokens > 0 else 0
             })
         
         return stats

@@ -42,3 +42,4 @@ This appears to be a documentation/specification repository for a context engine
 - Implement the 8-bucket context architecture
 - Support both static quotas and dynamic ROI-based allocation
 - Ensure "Lost in the Middle" mitigation through strategic positioning
+- 请记住使用使用 python 虚拟环境运行代码，虚拟环境位于项目根目录venv

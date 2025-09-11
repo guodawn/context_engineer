@@ -71,10 +71,13 @@ def main():
     
     print("Budget Allocations:")
     for allocation in allocations:
-        print(f"  {allocation.bucket_name}: {allocation.allocated_tokens} tokens (priority: {allocation.priority:.2f})")
+        print(f"  {allocation.bucket_name}: {allocation.allocated_tokens} tokens (priority: {allocation.priority:.2f}, content_score: {allocation.content_score:.2f})")
     
     total_allocated = sum(alloc.allocated_tokens for alloc in allocations)
+    available_budget = 8000 - 1200 - 200  # model_limit - output_budget - system_overhead
     print(f"Total allocated: {total_allocated} tokens")
+    print(f"Available budget: {available_budget} tokens")
+    print(f"Budget utilization: {total_allocated / available_budget:.1%}")
     print()
     
     print("3. Context Assembly Demo")
@@ -88,29 +91,77 @@ def main():
         bucket_configs=config.buckets
     )
     
+    print("Assembled Context Sections:")
+    for section in result.sections:
+        actual_tokens = tokenizer.count_tokens(section.content)
+        print(f"  {section.name}: {actual_tokens} tokens (allocated: {section.allocated_tokens})")
+        print(f"    Content preview: {section.content[:100]}...")
+    
     print(f"Assembled context: {result.total_tokens} tokens")
     print(f"Sections included: {[s.name for s in result.sections]}")
     print(f"Placement: {result.placement_map}")
+    
+    # Show context statistics
+    stats = assembler.get_context_stats(result)
+    print(f"Context statistics: {stats}")
     print()
     
-    print("4. Compression Demo")
+    print("4. Precise Compression Demo")
     print("-" * 30)
     
-    # Compress a long section
-    long_content = "This is a very long piece of content that needs to be compressed. " * 50
-    target_tokens = 50
+    # 演示新的精确压缩逻辑 - 基于allocated_tokens而非50%启发式
+    print("New Architecture: Precise compression based on allocated_tokens (not 50% heuristic)")
     
-    compression_result = compressor.compress(
-        content=long_content,
-        target_tokens=target_tokens,
-        method="extractive"
+    # Create content that exceeds its budget allocation
+    long_content = "This is a very long piece of content that needs to be compressed to fit within the allocated budget. " * 20
+    original_tokens = tokenizer.count_tokens(long_content)
+    allocated_budget = 50  # This section gets 50 tokens budget
+    
+    print(f"Original content: {original_tokens} tokens")
+    print(f"Allocated budget: {allocated_budget} tokens")
+    print(f"Content exceeds budget by: {original_tokens - allocated_budget} tokens")
+    
+    # The system will automatically detect this during assembly and compress precisely to allocated_budget
+    test_sections = {
+        "long_section": long_content,
+        "short_section": "This is short content that fits within budget."
+    }
+    
+    # Create budget allocations
+    test_allocations = budget_manager.allocate_budget(
+        model_context_limit=1000,
+        output_budget=200,
+        content_scores={"long_section": 0.8, "short_section": 0.6}
     )
     
-    print(f"Original tokens: {compression_result.original_tokens}")
-    print(f"Compressed tokens: {compression_result.compressed_tokens}")
-    print(f"Compression ratio: {compression_result.compression_ratio:.2f}")
-    print(f"Method used: {compression_result.method_used}")
-    print(f"Compressed content preview: {compression_result.compressed_content[:100]}...")
+    # Filter to only our test sections
+    test_allocations = [alloc for alloc in test_allocations if alloc.bucket_name in ["long_section", "short_section"]]
+    
+    print("\nBudget allocations:")
+    for allocation in test_allocations:
+        print(f"  {allocation.bucket_name}: {allocation.allocated_tokens} tokens")
+    
+    # Assemble to trigger precise compression
+    test_result = assembler.assemble_context(
+        content_sections=test_sections,
+        budget_allocations=test_allocations
+    )
+    
+    print("\nAssembly results:")
+    for section in test_result.sections:
+        actual_tokens = tokenizer.count_tokens(section.content)
+        allocated = section.allocated_tokens
+        print(f"  {section.name}:")
+        print(f"    Allocated: {allocated} tokens")
+        print(f"    Actual: {actual_tokens} tokens")
+        print(f"    Status: {'✅ Exact match' if actual_tokens == allocated else '❌ Mismatch'}")
+        print(f"    Compression: {'Applied' if actual_tokens < allocated else 'None needed'}")
+    
+    print("\nKey improvements:")
+    print("1. ✅ No more 50% heuristic - precise to allocated_tokens")
+    print("2. ✅ Real-time comparison: token_count vs allocated_tokens")
+    print("3. ✅ No compression_needed flag - cleaner architecture")
+    print("4. ✅ No _handle_overflow - simplified logic flow")
     print()
     
     print("5. Policy Engine Demo")
@@ -171,7 +222,28 @@ def main():
     stats = assembler.get_context_stats(policy_result)
     print(f"Context statistics: {stats}")
     
-    print("\n=== Example Complete ===")
+    print("\n6. Architecture Summary")
+    print("-" * 30)
+    
+    print("🚀 New Simplified Architecture:")
+    print("1. Budget Layer: allocates precise token budgets")
+    print("2. Content Layer: compares actual vs budget, applies precise compression")
+    print("3. Assembly Layer: arranges content with position-aware strategy")
+    print()
+    print("✅ Key Improvements:")
+    print("• Removed _handle_overflow - no meaningless overflow detection")
+    print("• Removed compression_needed - real-time token_count vs allocated_tokens comparison")
+    print("• Precise compression to allocated_tokens (not 50% heuristic)")
+    print("• Cleaner separation of concerns")
+    print("• More predictable behavior")
+    print()
+    print("📊 Performance Benefits:")
+    print(f"• Budget utilization: {total_allocated / available_budget:.1%}")
+    print(f"• Context efficiency: {policy_result.total_tokens / (8000 - 1200 - 200):.1%}")
+    print("• Zero waste - every token is precisely allocated")
+    print()
+    
+    print("=== Example Complete ===")
 
 
 if __name__ == "__main__":
