@@ -34,6 +34,7 @@ class BucketConfig:
     droppable: bool = False
     placement: str = "middle"
     content_score: float = 0.5
+    message_role: str = "system"
 
 
 @dataclass

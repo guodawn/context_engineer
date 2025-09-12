@@ -46,6 +46,7 @@ class ContextAssembler:
             "middle": [],
             "tail": []
         }
+        self._last_result = None  # 存储最后一次组装的结果
     
     def assemble_context(self,
                         content_sections: Dict[str, str],
@@ -83,13 +84,16 @@ class ContextAssembler:
         # Calculate total tokens
         total_tokens = self.tokenizer.count_tokens(assembled_context)
         
-        return AssembledContext(
+        result = AssembledContext(
             full_context=assembled_context,
             sections=sections,
             total_tokens=total_tokens,
             placement_map=placement_map,
             dropped_sections=dropped_sections
         )
+        
+        self._last_result = result  # 保存结果供后续使用
+        return result
     
     def _create_sections(self,
                         content_sections: Dict[str, str],
@@ -332,3 +336,58 @@ class ContextAssembler:
             })
         
         return stats
+    
+    def to_messages(self, user_sections: Optional[List[str]] = None, bucket_configs: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
+        """
+        将AssembledContext转换为最简化的消息格式：单个system message + 用户消息。
+        
+        策略：
+        - 除用户消息外，全部合并为单个system message
+        - 最大化LLM兼容性
+        - 无需format_type参数
+        
+        Args:
+            user_sections: 指定哪些section应该作为user role（默认：["user_query", "user", "input"]）
+            
+        Returns:
+            简化的消息列表，格式为 [system, user] 或类似结构
+            
+        Raises:
+            RuntimeError: 如果没有可转换的上下文
+        """
+        if not hasattr(self, '_last_result') or self._last_result is None:
+            raise RuntimeError("No assembled context available. Call assemble_context() first.")
+        
+        # 延迟导入避免循环依赖
+        from ..utils.message_formatter import MessageFormatter
+        
+        if not hasattr(self, '_message_formatter'):
+            self._message_formatter = MessageFormatter()
+        
+        # 使用最简化的格式，合并所有非用户消息为单个system message
+        # 传入bucket_configs以支持基于配置的角色分配
+        return self._message_formatter.to_openai_messages_simple(
+            self._last_result, 
+            user_sections=user_sections,
+            bucket_configs=bucket_configs
+        )
+    
+    def get_message_stats(self) -> Dict[str, Any]:
+        """
+        获取消息转换的统计信息。
+        
+        Returns:
+            消息统计信息
+            
+        Raises:
+            RuntimeError: 如果没有可转换的上下文
+        """
+        if not hasattr(self, '_last_result') or self._last_result is None:
+            raise RuntimeError("No assembled context available. Call assemble_context() first.")
+        
+        from ..utils.message_formatter import MessageFormatter
+        
+        if not hasattr(self, '_message_formatter'):
+            self._message_formatter = MessageFormatter()
+        
+        return self._message_formatter.get_section_role_summary(self._last_result)

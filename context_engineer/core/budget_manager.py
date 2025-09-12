@@ -14,7 +14,8 @@ class CompatBucketConfig:
                  sticky: bool = False, compress: Optional[str] = None, 
                  select: bool = False, rerank: Optional[str] = None,
                  droppable: bool = False, placement: str = "middle",
-                 content_score: float = 0.5):
+                 content_score: float = 0.5,
+                 message_role: str = "system"):
         self.name = name
         self.min_tokens = min_tokens
         self.max_tokens = max_tokens
@@ -26,6 +27,7 @@ class CompatBucketConfig:
         self.droppable = droppable
         self.placement = placement
         self.content_score = content_score
+        self.message_role = message_role
 
 try:
     from ..config.settings import BucketConfig as ConfigBucketConfig
@@ -97,7 +99,8 @@ class BudgetManager:
                     'rerank': getattr(config, 'rerank', None),
                     'droppable': getattr(config, 'droppable', False),
                     'placement': getattr(config, 'placement', 'middle'),
-                    'content_score': getattr(config, 'content_score', 0.5)
+                    'content_score': getattr(config, 'content_score', 0.5),
+                    'message_role': getattr(config, 'message_role', 'system')
                 }
                 bucket = BucketConfig(name=name, **bucket_data)
                 self.add_bucket(bucket)
